@@ -11801,7 +11801,6 @@ namespace cimg_library_suffixed {
     //-------------------------------
 #elif cimg_display==3
     bool _is_mouse_tracked, _is_cursor_visible;
-    pthread_t _thread;
     pthread_mutex_t _mutex;
     pthread_cond_t _is_created;
     CImgWindow *_window, *_background_window;
@@ -11823,60 +11822,13 @@ namespace cimg_library_suffixed {
         pthread_mutex_unlock(&cimg::macOS_attr().wait_event_mutex);
     }
 
-    static void* _events_thread(void *arg) {
-      CImgDisplay *const disp = (CImgDisplay*)(((void**)arg)[0]);
-      const char *const title = (const char*)(((void**)arg)[1]);
-      delete[] (void**)arg;
-      disp->_data = new unsigned int[(size_t)disp->_width*disp->_height];
-      if (!disp->_is_fullscreen) { // Normal window
-        const NSWindowStyleMask mask = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable | NSWindowStyleMaskFullSizeContentView;
-        NSRect rect = NSMakeRect(0, 0, disp->_width, disp->_height);
-        rect = [NSWindow frameRectForContentRect:rect styleMask:mask];
-        const int
-          ww = rect.size.width,
-          wh = rect.size.height,
-          sw = CImgDisplay::screen_width(),
-          sh = CImgDisplay::screen_height();
-        int
-          wx = (int)cimg::round(cimg::rand(0,sw - ww -1)),
-          wy = (int)cimg::round(cimg::rand(64,sh - wh - 65));
-        if (wx + ww>=sw) wx = sw - ww;
-        if (wy + wh>=sh) wy = sh - wh;
-        if (wx<0) wx = 0;
-        if (wy<0) wy = 0;
-        rect = NSMakeRect(wx, wy, ww, wh);
-        disp->_window = [[CImgWindow alloc] initWithContentRect:rect styleMask: mask backing: NSBackingStoreBuffered defer:YES];
-        NSString *t = [[NSString alloc] initWithUTF8String:title];
-        [disp->_window setTitle:t];
-        [disp->_window setBackgroundColor:[NSColor blackColor]];
-        [disp->_window setAlphaValue:0];
-        [disp->_window setDisplay: disp];
-        if (!disp->_is_closed) {
-          rect = [disp->_window frame];
-          disp->_window_x = rect.origin.x;
-          disp->_window_y = rect.origin.y;
-        } else disp->_window_x = disp->_window_y = cimg::type<int>::min();
-      } else { // Fullscreen window
-        const unsigned int
-          sx = (unsigned int)screen_width(),
-          sy = (unsigned int)screen_height();
-        NSRect rect = NSMakeRect(0, 0, sx, sy);
-        disp->_window = [[CImgWindow alloc] initWithContentRect:rect styleMask: NSWindowStyleMaskFullScreen backing: NSBackingStoreBuffered defer:YES];
-        [disp->_window setBackgroundColor:[NSColor blackColor]];
-        [disp->_window setAlphaValue:0];
-        [disp->_window setLevel:NSScreenSaverWindowLevel];
-        [disp->_window setDisplay: disp];
-        disp->_window_x = disp->_window_y = 0;
+    static void* events_thread(void*) {
+      if (![NSThread mainThread]) {
+        throw CImgDisplayException("CImgDisplay::events_thread(): this function must be run in the main thread.");
       }
-      [disp->_window makeKeyAndOrderFront:nil];
-      disp->_window_width = disp->_width;
-      disp->_window_height = disp->_height;
-      disp->flush();
-      pthread_cond_broadcast(&disp->_is_created);
-      // is this legal?! if so, how do i send the termination signal?
       [NSApplication sharedApplication];
-      if (![NSApp isRunning])
-        [NSApp run];
+      if ([NSApp isRunning]) return;
+      [NSApp run];
       return 0;
     }
 
@@ -11889,30 +11841,6 @@ namespace cimg_library_suffixed {
             _window_y = contentRect.origin.y;
         }
         return *this;
-    }
-
-    void _init_fullscreen() {
-        _background_window = nullptr;
-        if (!_is_fullscreen || _is_closed) return;
-        else {
-            const int sx = (int)screen_width(), sy = (int)screen_height();
-            if (sx != _width || sy != _height) {
-              NSRect rect = NSMakeRect(0, 0, sx, sy);
-              _background_window = [[CImgWindow alloc] initWithContentRect:rect styleMask: NSWindowStyleMaskFullScreen backing: NSBackingStoreBuffered defer:YES];
-              [_background_window setBackgroundColor:[NSColor blackColor]];
-              [_background_window setAlphaValue:0];
-              [_background_window setLevel:NSScreenSaverWindowLevel];
-              [_background_window setDisplay: this];
-              [_background_window makeKeyAndOrderFront:nil];
-            }
-        }
-    }
-
-    void _desinit_fullscreen() {
-        if (!_is_fullscreen) return;
-        if (_background_window) [_background_window close];
-        _background_window = nullptr;
-        _is_fullscreen = false;
     }
 
     CImgDisplay& _assign(const unsigned int dimw, const unsigned int dimh, const char *const ptitle=0,
@@ -11939,17 +11867,54 @@ namespace cimg_library_suffixed {
       _is_mouse_tracked = false;
       _title = tmp_title;
       flush();
-      if (_is_fullscreen) _init_fullscreen();
 
-      // Create event thread
-      void *const arg = (void*)(new void*[2]);
-      ((void**)arg)[0] = (void*)this;
-      ((void**)arg)[1] = (void*)_title;
-      pthread_mutex_init(&_mutex, NULL);
-      pthread_cond_init(&_is_created, NULL);
-      pthread_create(&_thread, 0, _events_thread, arg);
-      pthread_mutex_lock(&_mutex);
-      pthread_cond_wait(&_is_created, &_mutex);
+      // Create Cocoa window
+      _data = new unsigned int[(size_t)_width*_height];
+      if (!_is_fullscreen) { // Normal window
+        const NSWindowStyleMask mask = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable | NSWindowStyleMaskFullSizeContentView;
+        NSRect rect = NSMakeRect(0, 0, _width, _height);
+        rect = [NSWindow frameRectForContentRect:rect styleMask:mask];
+        const int
+          ww = rect.size.width,
+          wh = rect.size.height,
+          sw = CImgDisplay::screen_width(),
+          sh = CImgDisplay::screen_height();
+        int
+          wx = (int)cimg::round(cimg::rand(0,sw - ww -1)),
+          wy = (int)cimg::round(cimg::rand(64,sh - wh - 65));
+        if (wx + ww>=sw) wx = sw - ww;
+        if (wy + wh>=sh) wy = sh - wh;
+        if (wx<0) wx = 0;
+        if (wy<0) wy = 0;
+        rect = NSMakeRect(wx, wy, ww, wh);
+        _window = [[CImgWindow alloc] initWithContentRect:rect styleMask: mask backing: NSBackingStoreBuffered defer:YES];
+        NSString *t = [[NSString alloc] initWithUTF8String:_title];
+        [_window setTitle:t];
+        [_window setBackgroundColor:[NSColor blackColor]];
+        [_window setAlphaValue:0];
+        [_window setDisplay: this];
+        if (!_is_closed) {
+          rect = [_window frame];
+          _window_x = rect.origin.x;
+          _window_y = rect.origin.y;
+        } else _window_x = _window_y = cimg::type<int>::min();
+      } else { // Fullscreen window
+        const unsigned int
+          sx = (unsigned int)screen_width(),
+          sy = (unsigned int)screen_height();
+        NSRect rect = NSMakeRect(0, 0, sx, sy);
+        _window = [[CImgWindow alloc] initWithContentRect:rect styleMask: NSWindowStyleMaskFullScreen backing: NSBackingStoreBuffered defer:YES];
+        [_window setBackgroundColor:[NSColor blackColor]];
+        [_window setAlphaValue:0];
+        [_window setLevel:NSScreenSaverWindowLevel];
+        [_window setDisplay: this];
+        _window_x = _window_y = 0;
+      }
+      [_window makeKeyAndOrderFront:nil];
+      _window_width = _width;
+      _window_height = _height;
+      flush();
+
       return *this;
     }
 	
@@ -11961,7 +11926,6 @@ namespace cimg_library_suffixed {
       delete[] _title;
       _data = 0;
       _title = 0;
-      if (_is_fullscreen) _desinit_fullscreen();
       _width = _height = _normalization = _window_width = _window_height = 0;
       _window_x = _window_y = cimg::type<int>::min();
       _is_fullscreen = false;
@@ -12066,21 +12030,20 @@ namespace cimg_library_suffixed {
     }
 
     CImgDisplay& show() {
-        if (is_empty() || !_is_closed) return *this;
-        _is_closed = false;
-        if (_is_fullscreen) _init_fullscreen();
-        [_window makeKeyAndOrderFront:nil];
-        _update_window_pos();
-        return paint();
+      if (is_empty() || !_is_closed) return *this;
+      _is_closed = false;
+      [_window orderFront:nil];
+      _update_window_pos();
+      return paint();
     }
 
     CImgDisplay& close() {
-        if (is_empty() || _is_closed) return *this;
-        _is_closed = true;
-        if (_is_fullscreen) _desinit_fullscreen();
-        [_window orderOut:nil];
-        _window_x = _window_y = cimg::type<int>::min();
-        return *this;
+      if (is_empty() || _is_closed) return *this;
+      _is_closed = true;
+      _is_fullscreen = false;
+      [_window orderOut:nil];
+      _window_x = _window_y = cimg::type<int>::min();
+      return *this;
     }
 
     CImgDisplay& move(const int posx, const int posy) {

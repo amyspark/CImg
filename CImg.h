@@ -11801,6 +11801,7 @@ namespace cimg_library_suffixed {
     //-------------------------------
 #elif cimg_display==3
     bool _is_mouse_tracked, _is_cursor_visible;
+    pthread_t _thread;
     pthread_mutex_t _mutex;
     pthread_cond_t _is_created;
     CImgWindow *_window, *_background_window;
@@ -11820,6 +11821,74 @@ namespace cimg_library_suffixed {
         pthread_mutex_lock(&cimg::macOS_attr().wait_event_mutex);
         pthread_cond_wait(&cimg::macOS_attr().wait_event, &cimg::macOS_attr().wait_event_mutex);
         pthread_mutex_unlock(&cimg::macOS_attr().wait_event_mutex);
+    }
+
+    static void* _events_thread(void *arg) {
+      CImgDisplay *const disp = (CImgDisplay*)(((void**)arg)[0]);
+      const char *const title = (const char*)(((void**)arg)[1]);
+      delete[] (void**)arg;
+      disp->_data = new unsigned int[(size_t)disp->_width*disp->_height];
+      if (!disp->_is_fullscreen) { // Normal window
+        const NSWindowStyleMask mask = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable | NSWindowStyleMaskFullSizeContentView;
+        NSRect rect = NSMakeRect(0, 0, disp->_width, disp->_height);
+        rect = [NSWindow frameRectForContentRect:rect styleMask:mask];
+        const int
+          ww = rect.size.width,
+          wh = rect.size.height,
+          sw = CImgDisplay::screen_width(),
+          sh = CImgDisplay::screen_height();
+        int
+          wx = (int)cimg::round(cimg::rand(0,sw - ww -1)),
+          wy = (int)cimg::round(cimg::rand(64,sh - wh - 65));
+        if (wx + ww>=sw) wx = sw - ww;
+        if (wy + wh>=sh) wy = sh - wh;
+        if (wx<0) wx = 0;
+        if (wy<0) wy = 0;
+        rect = NSMakeRect(wx, wy, ww, wh);
+        disp->_window = [[CImgWindow alloc] initWithContentRect:rect styleMask: mask backing: NSBackingStoreBuffered defer:YES];
+        NSString *t = [[NSString alloc] initWithUTF8String:title];
+        [disp->_window setTitle:t];
+        [disp->_window setBackgroundColor:[NSColor blackColor]];
+        [disp->_window setAlphaValue:0];
+        [disp->_window setDisplay: disp];
+        if (!disp->_is_closed) {
+          rect = [disp->_window frame];
+          disp->_window_x = rect.origin.x;
+          disp->_window_y = rect.origin.y;
+        } else disp->_window_x = disp->_window_y = cimg::type<int>::min();
+      } else { // Fullscreen window
+        const unsigned int
+          sx = (unsigned int)screen_width(),
+          sy = (unsigned int)screen_height();
+        NSRect rect = NSMakeRect(0, 0, sx, sy);
+        disp->_window = [[CImgWindow alloc] initWithContentRect:rect styleMask: NSWindowStyleMaskFullScreen backing: NSBackingStoreBuffered defer:YES];
+        [disp->_window setBackgroundColor:[NSColor blackColor]];
+        [disp->_window setAlphaValue:0];
+        [disp->_window setLevel:NSScreenSaverWindowLevel];
+        [disp->_window setDisplay: disp];
+        disp->_window_x = disp->_window_y = 0;
+      }
+      [disp->_window makeKeyAndOrderFront:nil];
+      disp->_window_width = disp->_width;
+      disp->_window_height = disp->_height;
+      disp->flush();
+      pthread_cond_broadcast(&disp->_is_created);
+      // is this legal?! if so, how do i send the termination signal?
+      [NSApplication sharedApplication];
+      if (![NSApp isRunning])
+        [NSApp run];
+      return 0;
+    }
+
+    CImgDisplay& _update_window_pos() {
+        if (_is_closed) _window_x = _window_y = cimg::type<int>::min();
+        else {
+            NSRect contentRect = NSMakeRect(0, 0, _width, _height);
+            contentRect = [_window frameRectForContentRect: contentRect];
+            _window_x = contentRect.origin.x;
+            _window_y = contentRect.origin.y;
+        }
+        return *this;
     }
 
     void _init_fullscreen() {
@@ -11846,18 +11915,7 @@ namespace cimg_library_suffixed {
         _is_fullscreen = false;
     }
 
-    CImgDisplay& _update_window_pos() {
-        if (_is_closed) _window_x = _window_y = cimg::type<int>::min();
-        else {
-            NSRect contentRect = NSMakeRect(0, 0, _width, _height);
-            contentRect = [_window frameRectForContentRect: contentRect];
-            _window_x = contentRect.origin.x;
-            _window_y = contentRect.origin.y;
-        }
-        return *this;
-    }
-
-     CImgDisplay& _assign(const unsigned int dimw, const unsigned int dimh, const char *const ptitle=0,
+    CImgDisplay& _assign(const unsigned int dimw, const unsigned int dimh, const char *const ptitle=0,
                          const unsigned int normalization_type=3,
                          const bool fullscreen_flag=false, const bool closed_flag=false) {
 
@@ -11883,14 +11941,21 @@ namespace cimg_library_suffixed {
       flush();
       if (_is_fullscreen) _init_fullscreen();
 
-       // todo: who calls the event thread?!
+      // Create event thread
+      void *const arg = (void*)(new void*[2]);
+      ((void**)arg)[0] = (void*)this;
+      ((void**)arg)[1] = (void*)_title;
+      pthread_mutex_init(&_mutex, NULL);
+      pthread_cond_init(&_is_created, NULL);
+      pthread_create(&_thread, 0, _events_thread, arg);
+      pthread_mutex_lock(&_mutex);
+      pthread_cond_wait(&_is_created, &_mutex);
       return *this;
     }
 	
     CImgDisplay& assign() {
       if (is_empty()) return flush();
       [_window close];
-      [_window setDelegate:nil];
       _window = 0;
       delete[] _data;
       delete[] _title;
@@ -11945,14 +12010,14 @@ namespace cimg_library_suffixed {
       return display(nimg);
     }
 	
-	CImgDisplay& assign(const CImgDisplay& disp) {
+    CImgDisplay& assign(const CImgDisplay& disp) {
       if (!disp) return assign();
       _assign(disp._width,disp._height,disp._title,disp._normalization,disp._is_fullscreen,disp._is_closed);
-      // todo copy cgimage _data
+      std::memcpy(_data,disp._data,sizeof(unsigned int)*_width*_height);
       return paint();
     }
 	
-	CImgDisplay& resize(const int nwidth, const int nheight, const bool force_redraw=true) {
+    CImgDisplay& resize(const int nwidth, const int nheight, const bool force_redraw=true) {
       if (!nwidth || !nheight || (is_empty() && (nwidth<0 || nheight<0))) return assign();
       if (is_empty()) return assign((unsigned int)nwidth,(unsigned int)nheight);
       const unsigned int

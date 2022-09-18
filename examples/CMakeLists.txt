@@ -111,7 +111,7 @@ SET(CIMG_FFTW3_CCFLAGS  -Dcimg_use_fftw3)
 SET(CIMG_HEIC_CCFLAGS  -Dcimg_use_heic)
 
 # Flags to enable support for the Cocoa backend in macOS.
-SET(CIMG_COCOA_CCFLAGS -x objective-c++ -fobj-arc -Dcimg_cocoa_export)
+SET(CIMG_COCOA_CCFLAGS "-x objective-c++ -std=c++14 -fobjc-arc -Dcimg_cocoa_export")
 
 # ### Search Additional Libraries ##########
 FIND_PACKAGE(OpenCV)
@@ -138,9 +138,9 @@ find_package_handle_standard_args(HEIF
                                   REQUIRED_VARS HEIF_LIBRARY HEIF_INCLUDE_DIR
                                   VERSION_VAR HEIF_VERSION)
 
-PKG_CHECK_MODULES(FFTW3 fftw3)
+# PKG_CHECK_MODULES(FFTW3 fftw3)
 PKG_CHECK_MODULES(OPENEXR OpenEXR)
-PKG_CHECK_MODULES(MAGICK Magick++)
+# PKG_CHECK_MODULES(MAGICK Magick++)
 
 # PKG_CHECK_MODULES(LIBAVCODEC libavcodec)
 # PKG_CHECK_MODULES(LIBAVFORMAT libavformat)
@@ -150,7 +150,7 @@ PKG_CHECK_MODULES(MAGICK Magick++)
 if(NOT WIN32 AND NOT APPLE)
   FIND_PACKAGE(X11)
 elseif(APPLE)
-  FIND_LIBRARY(APPKIT_LIBRARY AppKit)
+  FIND_LIBRARY(APPKIT_LIBRARY AppKit REQUIRED)
 endif()
 
 FIND_PACKAGE(Threads REQUIRED)

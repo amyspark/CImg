@@ -110,7 +110,8 @@ SET(CIMG_FFTW3_CCFLAGS  -Dcimg_use_fftw3)
 # ( https://github.com/strukturag/libheif )
 SET(CIMG_HEIC_CCFLAGS  -Dcimg_use_heic)
 
-
+# Flags to enable support for the Cocoa backend in macOS.
+SET(CIMG_COCOA_CCFLAGS -x objective-c++ -fobj-arc -Dcimg_cocoa_export)
 
 # ### Search Additional Libraries ##########
 FIND_PACKAGE(OpenCV)
@@ -146,10 +147,13 @@ PKG_CHECK_MODULES(MAGICK Magick++)
 # PKG_CHECK_MODULES(LIBSWSCALE libswscale)
 # PKG_CHECK_MODULES(LIBAVUTIL libavutil)
 
-if(NOT WIN32)
+if(NOT WIN32 AND NOT APPLE)
   FIND_PACKAGE(X11)
-  FIND_PACKAGE(Threads REQUIRED)
+elseif(APPLE)
+  FIND_LIBRARY(APPKIT_LIBRARY AppKit)
 endif()
+
+FIND_PACKAGE(Threads REQUIRED)
 
 # #### End of additional libraries search ##########
 
@@ -266,6 +270,11 @@ endif()
 
 if( WIN32)
   SET( SYSTEM_LIBS  ${SYSTEM_LIBS}  gdi32 )
+endif()
+
+if (APPLE)
+  SET(CIMG_CFLAGS "${CIMG_CFLAGS} ${CIMG_COCOA_CCFLAGS}")
+  SET(SYSTEM_LIBS ${SYSTEM_LIBS} ${APPKIT_LIBRARY})
 endif()
 
 if (OpenCV_FOUND)

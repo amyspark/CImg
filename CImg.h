@@ -440,6 +440,7 @@ enum {FALSE_WIN = 0};
 #endif
 #import <AppKit/AppKit.h>
 #import <Carbon/Carbon.h>
+#include <pthread.h>
 #endif
 #ifndef cimg_appname
 #define cimg_appname "CImg"
@@ -2348,6 +2349,22 @@ namespace cimg_library_suffixed {
  # Define Objective-C classes
  #
  -------------------------------------------------*/
+extern "C" {
+extern pthread_t _CFMainPThread;
+extern void _CFRunLoopSetCurrent(CFRunLoopRef rl);
+}
+//! Implements a basic hook for NSApp
+/**
+    This object hooks on CoreFoundation internals and makes them
+    executable from threads other than the main thread.
+    Intended for use in contexts where CImg can be spawned outside
+    of a main thread.
+**/
+@interface CImgApp : NSObject
+- (BOOL) isMainThread;
+- (void) run;
+@end
+
 //! Implements a window delegate for the Cocoa backend.
 /**
     This delegate captures all window events and communicates them
@@ -3296,13 +3313,15 @@ namespace cimg_library_suffixed {
 #endif
 #elif cimg_display==3
     struct macOS_static {
-        pthread_cond_t wait_event;
-        pthread_mutex_t wait_event_mutex;
+      CImgApp *app;
+      NSThread *events_thread;
+      pthread_cond_t wait_event;
+      pthread_mutex_t wait_event_mutex;
 
-        macOS_static() {
-            pthread_mutex_init(&wait_event_mutex, 0);
-            pthread_cond_init(&wait_event, 0);
-        }
+      macOS_static():events_thread(nil) {
+        pthread_mutex_init(&wait_event_mutex, 0);
+        pthread_cond_init(&wait_event, 0);
+      }
     };
 #if defined(cimg_module)
     macOS_static& macOS_attr();
@@ -11822,54 +11841,7 @@ namespace cimg_library_suffixed {
         pthread_mutex_unlock(&cimg::macOS_attr().wait_event_mutex);
     }
 
-    static void* events_thread(void*) {
-      if (![NSThread mainThread]) {
-        throw CImgDisplayException("CImgDisplay::events_thread(): this function must be run in the main thread.");
-      }
-      [NSApplication sharedApplication];
-      if ([NSApp isRunning]) return;
-      [NSApp run];
-      return 0;
-    }
-
-    CImgDisplay& _update_window_pos() {
-        if (_is_closed) _window_x = _window_y = cimg::type<int>::min();
-        else {
-            NSRect contentRect = NSMakeRect(0, 0, _width, _height);
-            contentRect = [_window frameRectForContentRect: contentRect];
-            _window_x = contentRect.origin.x;
-            _window_y = contentRect.origin.y;
-        }
-        return *this;
-    }
-
-    CImgDisplay& _assign(const unsigned int dimw, const unsigned int dimh, const char *const ptitle=0,
-                         const unsigned int normalization_type=3,
-                         const bool fullscreen_flag=false, const bool closed_flag=false) {
-
-      // Allocate space for window title
-      const char *const nptitle = ptitle?ptitle:"";
-      const unsigned int s = (unsigned int)std::strlen(nptitle) + 1;
-      char *const tmp_title = s?new char[s]:0;
-      if (s) std::memcpy(tmp_title,nptitle,s*sizeof(char));
-
-      // Destroy previous window if existing
-      if (!is_empty()) assign();
-
-      // Set display variables
-      _width = std::min(dimw,(unsigned int)screen_width());
-      _height = std::min(dimh,(unsigned int)screen_height());
-      _normalization = normalization_type<4?normalization_type:3;
-      _is_fullscreen = fullscreen_flag;
-      _window_x = _window_y = cimg::type<int>::min();
-      _is_closed = closed_flag;
-      _is_cursor_visible = true;
-      _is_mouse_tracked = false;
-      _title = tmp_title;
-      flush();
-
-      // Create Cocoa window
-      _data = new unsigned int[(size_t)_width*_height];
+    void _create_window() {
       if (!_is_fullscreen) { // Normal window
         const NSWindowStyleMask mask = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable | NSWindowStyleMaskFullSizeContentView;
         NSRect rect = NSMakeRect(0, 0, _width, _height);
@@ -11914,6 +11886,66 @@ namespace cimg_library_suffixed {
       _window_width = _width;
       _window_height = _height;
       flush();
+    }
+
+    static void _events_thread(void* arg) {
+      if (![NSThread mainThread]) {
+        throw CImgDisplayException("CImgDisplay::events_thread(): this function must be run in the main thread.");
+      }
+      CImgDisplay *const disp = (CImgDisplay*)(arg);
+
+      disp->_create_window();
+    }
+
+    CImgDisplay& _update_window_pos() {
+        if (_is_closed) _window_x = _window_y = cimg::type<int>::min();
+        else {
+            NSRect contentRect = NSMakeRect(0, 0, _width, _height);
+            contentRect = [_window frameRectForContentRect: contentRect];
+            _window_x = contentRect.origin.x;
+            _window_y = contentRect.origin.y;
+        }
+        return *this;
+    }
+
+    CImgDisplay& _assign(const unsigned int dimw, const unsigned int dimh, const char *const ptitle=0,
+                         const unsigned int normalization_type=3,
+                         const bool fullscreen_flag=false, const bool closed_flag=false) {
+
+      // Allocate space for window title
+      const char *const nptitle = ptitle?ptitle:"";
+      const unsigned int s = (unsigned int)std::strlen(nptitle) + 1;
+      char *const tmp_title = s?new char[s]:0;
+      if (s) std::memcpy(tmp_title,nptitle,s*sizeof(char));
+
+      // Destroy previous window if existing
+      if (!is_empty()) assign();
+
+      // Set display variables
+      _width = std::min(dimw,(unsigned int)screen_width());
+      _height = std::min(dimh,(unsigned int)screen_height());
+      _normalization = normalization_type<4?normalization_type:3;
+      _is_fullscreen = fullscreen_flag;
+      _window_x = _window_y = cimg::type<int>::min();
+      _is_closed = closed_flag;
+      _is_cursor_visible = true;
+      _is_mouse_tracked = false;
+      _title = tmp_title;
+      flush();
+
+      // Create global event thread
+      if (![NSApp isRunning]) {
+        cimg_lock_display();
+        cimg::macOS_attr().app = [[CImgApp alloc] init];
+        cimg::macOS_attr().events_thread = [[NSThread alloc] initWithTarget:cimg::macOS_attr().app selector:@selector(run) object:nil];
+        cimg_unlock_display();
+      }
+      // Create Cocoa window
+      if ([NSThread isMainThread]) {
+        _create_window();
+      } else {
+        dispatch_async_f(dispatch_get_main_queue(), this, _events_thread);
+      }
 
       return *this;
     }
@@ -67148,6 +67180,46 @@ namespace cimg_library_suffixed {
 } // namespace cimg_library { ...
 
 #if cimg_display==3 && defined(cimg_cocoa_export)
+#import <objc/runtime.h>
+
+@implementation CImgApp
+- (BOOL) isMainThread
+{
+  // Don't worry, be happy...
+  return TRUE;
+}
+- (void) run
+{
+  // Inject the dummy check inside Obj-C runtime
+  Method orig = class_getClassMethod([NSThread class], NSSelectorFromString(@"isMainThread"));
+  Method hook = class_getClassMethod([CImgApp class], NSSelectorFromString(@"isMainThread"));
+  if (orig && hook) {
+    method_exchangeImplementations(orig, hook);
+  } else {
+    throw cimg_library::CImgDisplayException("[Obj-C] CImgApp::run: cannot hook on NSThread::isMainThread.");
+  }
+  // Dummy out the existing run loop
+  CFRetain(CFRunLoopGetCurrent());
+  // Redirect the main loop to this thread
+  _CFRunLoopSetCurrent(CFRunLoopGetMain());
+  // Redirect CoreFoundation to this thread
+  _CFMainPThread = pthread_self();
+
+  // Set NSApp up
+  [NSApplication sharedApplication];
+  [NSApp finishLaunching];
+
+  // Execute a manual event loop
+  NSEvent *event = nil;
+  NSDate *pollTime = [NSDate distantFuture];
+  do {
+      event = [NSApp nextEventMatchingMask:NSEventMaskAny untilDate:pollTime
+            inMode:NSDefaultRunLoopMode dequeue:YES];
+      [NSApp sendEvent:event];
+  } while (event != nil);
+}
+@end
+
 @implementation CImgWindow
 {
 @private

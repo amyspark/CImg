@@ -434,13 +434,17 @@ enum {FALSE_WIN = 0};
 #error CImg Library: To use the Cocoa backend, you need to compile with Objective-C++ enabled.
 #error Add the compile flag '-x objective-c++' to your build configuration.
 #endif
-#if !__has_feature(objc_arc)
+#if !defined(__has_feature) && !__has_feature(objc_arc)
 #error CImg Library: To use the Cocoa backend, you need to enable ARC for the object files using this library.
 #error Add the compile flag '-fobjc-arc' to your build configuration.
+#endif
+#if cimg_use_cpp11!=1
+#error CImg library: The Cocoa backend requires C++ 11 or higher.
 #endif
 #import <AppKit/AppKit.h>
 #import <Carbon/Carbon.h>
 #include <pthread.h>
+#include <vector>
 #endif
 #ifndef cimg_appname
 #define cimg_appname "CImg"
@@ -2362,6 +2366,7 @@ extern void _CFRunLoopSetCurrent(CFRunLoopRef rl);
 **/
 @interface CImgApp : NSObject
 - (BOOL) isMainThread;
++ (BOOL) isMainThread;
 - (void) run;
 @end
 
@@ -3315,12 +3320,13 @@ namespace cimg_library_suffixed {
     struct macOS_static {
       CImgApp *app;
       NSThread *events_thread;
-      pthread_cond_t wait_event;
+      pthread_cond_t wait_event, _is_created;
       pthread_mutex_t wait_event_mutex;
 
       macOS_static():events_thread(nil) {
         pthread_mutex_init(&wait_event_mutex, 0);
         pthread_cond_init(&wait_event, 0);
+        pthread_cond_init(&_is_created, 0);
       }
     };
 #if defined(cimg_module)
@@ -11823,7 +11829,7 @@ namespace cimg_library_suffixed {
     pthread_mutex_t _mutex;
     pthread_cond_t _is_created;
     CImgWindow *_window, *_background_window;
-    unsigned int *_data;
+    std::vector<unsigned int> _data;
 
     static int screen_width() {
         const NSRect frame = [[NSScreen mainScreen] frame];
@@ -11842,6 +11848,7 @@ namespace cimg_library_suffixed {
     }
 
     void _create_window() {
+      _data.resize(_width*_height);
       if (!_is_fullscreen) { // Normal window
         const NSWindowStyleMask mask = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable | NSWindowStyleMaskFullSizeContentView;
         NSRect rect = NSMakeRect(0, 0, _width, _height);
@@ -11886,6 +11893,8 @@ namespace cimg_library_suffixed {
       _window_width = _width;
       _window_height = _height;
       flush();
+
+      pthread_cond_broadcast(&_is_created);
     }
 
     static void _events_thread(void* arg) {
@@ -11933,18 +11942,27 @@ namespace cimg_library_suffixed {
       _title = tmp_title;
       flush();
 
+      pthread_mutex_init(&_mutex, NULL);
+      pthread_cond_init(&_is_created, NULL);
       // Create global event thread
       if (![NSApp isRunning]) {
         cimg_lock_display();
         cimg::macOS_attr().app = [[CImgApp alloc] init];
         cimg::macOS_attr().events_thread = [[NSThread alloc] initWithTarget:cimg::macOS_attr().app selector:@selector(run) object:nil];
+        [cimg::macOS_attr().events_thread start];
         cimg_unlock_display();
+
+        // lock until the events thread is done patching
+        pthread_mutex_lock(&cimg::macOS_attr().wait_event_mutex);
+        pthread_cond_wait(&cimg::macOS_attr()._is_created,&cimg::macOS_attr().wait_event_mutex);
       }
       // Create Cocoa window
       if ([NSThread isMainThread]) {
         _create_window();
       } else {
+        pthread_mutex_lock(&_mutex);
         dispatch_async_f(dispatch_get_main_queue(), this, _events_thread);
+        pthread_cond_wait(&_is_created, &_mutex);
       }
 
       return *this;
@@ -11954,9 +11972,8 @@ namespace cimg_library_suffixed {
       if (is_empty()) return flush();
       [_window close];
       _window = 0;
-      delete[] _data;
+      _data.clear();
       delete[] _title;
-      _data = 0;
       _title = 0;
       _width = _height = _normalization = _window_width = _window_height = 0;
       _window_x = _window_y = cimg::type<int>::min();
@@ -11974,7 +11991,8 @@ namespace cimg_library_suffixed {
       if (!dimw || !dimh) return assign();
       _assign(dimw,dimh,title,normalization_type,fullscreen_flag,closed_flag);
       _min = _max = 0;
-      std::memset(_data,0,sizeof(unsigned int)*_width*_height);
+      _data.resize(_width * _height, 0);
+      std::memset(_data.data(),0,sizeof(unsigned int)*_width*_height);
       return paint();
     }
 	
@@ -12009,7 +12027,7 @@ namespace cimg_library_suffixed {
     CImgDisplay& assign(const CImgDisplay& disp) {
       if (!disp) return assign();
       _assign(disp._width,disp._height,disp._title,disp._normalization,disp._is_fullscreen,disp._is_closed);
-      std::memcpy(_data,disp._data,sizeof(unsigned int)*_width*_height);
+      std::memcpy(_data.data(),disp._data.data(),sizeof(unsigned int)*_width*_height);
       return paint();
     }
 	
@@ -12028,10 +12046,9 @@ namespace cimg_library_suffixed {
           [_window setFrame: rect display: YES];
         }
         if (_width!=dimx || _height!=dimy) {
-          unsigned int *const ndata = new unsigned int[dimx*dimy];
-          if (force_redraw) _render_resize(_data,_width,_height,ndata,dimx,dimy);
-          else std::memset(ndata,0x80,sizeof(unsigned int)*dimx*dimy);
-          delete[] _data;
+          std::vector<unsigned int> ndata(dimx*dimy);
+          if (force_redraw) _render_resize(_data.data(),_width,_height,ndata.data(),dimx,dimy);
+          else std::memset(ndata.data(),0x80,sizeof(unsigned int)*dimx*dimy);
           _data = ndata;
           _width = dimx;
           _height = dimy;
@@ -12051,9 +12068,9 @@ namespace cimg_library_suffixed {
         const cimg_ulong buf_size = (cimg_ulong)_width*_height*sizeof(unsigned int);
         void *odata = std::malloc(buf_size);
         if (odata) {
-          std::memcpy(odata,_data,buf_size);
+          std::memcpy(odata,_data.data(),buf_size);
           assign(_width,_height,_title,_normalization,!_is_fullscreen,false);
-          std::memcpy(_data,odata,buf_size);
+          std::memcpy(_data.data(),odata,buf_size);
           std::free(odata);
         }
         return paint();
@@ -12145,7 +12162,7 @@ namespace cimg_library_suffixed {
       if (_is_closed) return *this;
       pthread_mutex_lock(&_mutex);
       NSGraphicsContext *ctxt = [NSGraphicsContext graphicsContextWithWindow:_window];
-      CGDataProviderRef data = CGDataProviderCreateWithData(NULL, _data, _width*_height*sizeof(unsigned int), NULL);
+      CGDataProviderRef data = CGDataProviderCreateWithData(NULL, _data.data(), _width*_height*sizeof(unsigned int), NULL);
       CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
       CGImageRef image = CGImageCreate(_width, _height, 8, 32, _width*sizeof(unsigned int), cs, kCGBitmapByteOrderDefault | kCGImageAlphaLast, data, NULL, true, kCGRenderingIntentDefault);
       CGContextDrawImage([ctxt CGContext], [_window frame], image);
@@ -12171,7 +12188,7 @@ namespace cimg_library_suffixed {
 
       pthread_mutex_lock(&_mutex);
       unsigned int
-        *const ndata = (img._width==_width && img._height==_height)?_data:
+        *const ndata = (img._width==_width && img._height==_height)?_data.data():
         new unsigned int[(size_t)img._width*img._height],
         *ptrd = ndata;
 
@@ -12237,7 +12254,7 @@ namespace cimg_library_suffixed {
         }
         }
       }
-      if (ndata!=_data) { _render_resize(ndata,img._width,img._height,_data,_width,_height); delete[] ndata; }
+      if (ndata!=_data.data()) { _render_resize(ndata,img._width,img._height,_data.data(),_width,_height); delete[] ndata; }
       pthread_mutex_unlock(&_mutex);
       return *this;
     }
@@ -12289,7 +12306,7 @@ namespace cimg_library_suffixed {
     template<typename T>
     const CImgDisplay& snapshot(CImg<T>& img) const {
       if (is_empty()) { img.assign(); return *this; }
-      const unsigned int *ptrs = _data;
+      const unsigned int *ptrs = _data.data();
       img.assign(_width,_height,1,3);
       T
         *data1 = img.data(0,0,0,0),
@@ -67185,18 +67202,33 @@ namespace cimg_library_suffixed {
 @implementation CImgApp
 - (BOOL) isMainThread
 {
-  // Don't worry, be happy...
-  return TRUE;
+  return [NSThread currentThread] == cimg_library::cimg::macOS_attr().events_thread;
+}
++ (BOOL) isMainThread
+{
+  return [NSThread currentThread] == cimg_library::cimg::macOS_attr().events_thread;
 }
 - (void) run
 {
+  // Help identify the thread
+  static const char* const name = "eu.cimg.events-thread";
+  pthread_setname_np(name);
+
   // Inject the dummy check inside Obj-C runtime
-  Method orig = class_getClassMethod([NSThread class], NSSelectorFromString(@"isMainThread"));
-  Method hook = class_getClassMethod([CImgApp class], NSSelectorFromString(@"isMainThread"));
+  Method orig = class_getClassMethod([NSThread class], @selector(isMainThread));
+  Method hook = class_getClassMethod([CImgApp class], @selector(isMainThread));
   if (orig && hook) {
     method_exchangeImplementations(orig, hook);
   } else {
-    throw cimg_library::CImgDisplayException("[Obj-C] CImgApp::run: cannot hook on NSThread::isMainThread.");
+    throw cimg_library::CImgDisplayException("[Obj-C] CImgApp::run: cannot hook global isMainThread check.");
+  }
+
+  Method orig2 = class_getInstanceMethod([NSThread class], @selector(isMainThread));
+  Method hook2 = class_getInstanceMethod([CImgApp class], @selector(isMainThread));
+  if (orig2 && hook2) {
+    method_exchangeImplementations(orig2, hook2);
+  } else {
+    throw cimg_library::CImgDisplayException("[Obj-C] CImgApp::run: cannot hook instance isMainThread check.");
   }
   // Dummy out the existing run loop
   CFRetain(CFRunLoopGetCurrent());
@@ -67209,14 +67241,21 @@ namespace cimg_library_suffixed {
   [NSApplication sharedApplication];
   [NSApp finishLaunching];
 
-  // Execute a manual event loop
+  assert(dispatch_get_main_queue() == dispatch_get_current_queue());
+
+  // Now we can let the rest of the world live
+  pthread_cond_broadcast(&cimg_library::cimg::macOS_attr()._is_created);
   NSEvent *event = nil;
   NSDate *pollTime = [NSDate distantFuture];
+
   do {
       event = [NSApp nextEventMatchingMask:NSEventMaskAny untilDate:pollTime
-            inMode:NSDefaultRunLoopMode dequeue:YES];
+          inMode:NSDefaultRunLoopMode dequeue:YES];
       [NSApp sendEvent:event];
   } while (event != nil);
+
+  method_exchangeImplementations(hook, orig);
+  method_exchangeImplementations(hook2, orig2);
 }
 @end
 

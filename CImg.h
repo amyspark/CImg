@@ -2367,6 +2367,7 @@ extern void _CFRunLoopSetCurrent(CFRunLoopRef rl);
 @interface CImgApp : NSObject
 - (BOOL) isMainThread;
 + (BOOL) isMainThread;
+- (void) initializeWindow:(cimg_library_suffixed::CImgDisplay *)disp;
 - (void) run;
 @end
 
@@ -11897,15 +11898,6 @@ namespace cimg_library_suffixed {
       pthread_cond_broadcast(&_is_created);
     }
 
-    static void _events_thread(void* arg) {
-      if (![NSThread mainThread]) {
-        throw CImgDisplayException("CImgDisplay::events_thread(): this function must be run in the main thread.");
-      }
-      CImgDisplay *const disp = (CImgDisplay*)(arg);
-
-      disp->_create_window();
-    }
-
     CImgDisplay& _update_window_pos() {
         if (_is_closed) _window_x = _window_y = cimg::type<int>::min();
         else {
@@ -11961,7 +11953,7 @@ namespace cimg_library_suffixed {
         _create_window();
       } else {
         pthread_mutex_lock(&_mutex);
-        dispatch_async_f(dispatch_get_main_queue(), this, _events_thread);
+        [cimg::macOS_attr().app performSelector:@selector(initializeWindow) onThread:cimg::macOS_attr().events_thread withObject:this waitUntilDone:FALSE];
         pthread_cond_wait(&_is_created, &_mutex);
       }
 
@@ -67208,6 +67200,10 @@ namespace cimg_library_suffixed {
 {
   return [NSThread currentThread] == cimg_library::cimg::macOS_attr().events_thread;
 }
+- (void) initializeWindow:(cimg_library_suffixed::CImgDisplay *)disp
+{
+  disp->_create_window();
+}
 - (void) run
 {
   // Help identify the thread
@@ -67240,8 +67236,6 @@ namespace cimg_library_suffixed {
   // Set NSApp up
   [NSApplication sharedApplication];
   [NSApp finishLaunching];
-
-  assert(dispatch_get_main_queue() == dispatch_get_current_queue());
 
   // Now we can let the rest of the world live
   pthread_cond_broadcast(&cimg_library::cimg::macOS_attr()._is_created);

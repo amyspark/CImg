@@ -82,8 +82,9 @@ static void *run(void *)
 int main() {
 
   [NSApplication sharedApplication];
+  [NSApp activateIgnoringOtherApps:YES];
   pthread_t thread;
-  pthread_create(&thread, NULL, run, NULL);
+  pthread_create(&thread, NULL, &run, NULL);
   [NSApp run];
   pthread_join(thread, NULL);
 

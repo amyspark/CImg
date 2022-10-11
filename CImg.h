@@ -11895,10 +11895,14 @@ namespace cimg_library_suffixed {
       _window_height = _height;
       flush();
 
+      [_window setRestorable:NO];
+      [_window makeKeyAndOrderFront:nil];
+      if (!_is_fullscreen) {
+        [_window setMovableByWindowBackground:YES];
+      }
+
       pthread_mutex_unlock(&_mutex);
       pthread_cond_broadcast(&_is_created);
-
-      [_window performSelectorOnMainThread:@selector(makeKeyAndOrderFront:) withObject:nil waitUntilDone:false];
     }
 
     CImgDisplay& _update_window_pos() {
@@ -12031,9 +12035,11 @@ namespace cimg_library_suffixed {
         dimy = tmpdimy?tmpdimy:1;
       if (_width!=dimx || _height!=dimy || _window_width!=dimx || _window_height!=dimy) {
         if (_window_width!=dimx || _window_height!=dimy) {
-          NSRect rect = NSMakeRect(0, 0, dimx, dimy);
-          rect = [_window frameRectForContentRect: rect];
-          [_window setFrame: rect display: YES];
+          dispatch_sync(dispatch_get_main_queue(), ^{
+            NSRect rect = NSMakeRect(0, 0, dimx, dimy);
+            rect = [_window frameRectForContentRect: rect];
+            [_window setFrame: rect display: YES];
+          });
         }
         if (_width!=dimx || _height!=dimy) {
           std::vector<unsigned int> ndata(dimx*dimy);
@@ -12071,7 +12077,7 @@ namespace cimg_library_suffixed {
     CImgDisplay& show() {
       if (is_empty() || !_is_closed) return *this;
       _is_closed = false;
-      [_window orderFront:nil];
+      [_window performSelectorOnMainThread:@selector(orderFront:) withObject:nil waitUntilDone:YES];
       _update_window_pos();
       return paint();
     }
@@ -12080,22 +12086,24 @@ namespace cimg_library_suffixed {
       if (is_empty() || _is_closed) return *this;
       _is_closed = true;
       _is_fullscreen = false;
-      [_window orderOut:nil];
+      [_window performSelectorOnMainThread:@selector(orderOut:) withObject:nil waitUntilDone:YES];
       _window_x = _window_y = cimg::type<int>::min();
       return *this;
     }
 
     CImgDisplay& move(const int posx, const int posy) {
-        if (is_empty()) return *this;
-        if (_window_x != posx || _window_y != posy) {
-            NSPoint pos = NSMakePoint(posx, posy);
-            [_window setFrameTopLeftPoint : pos] ;
-            _window_x = posx;
-            _window_y = posy;
-        }
-        show();
-        _is_moved = false;
-        return *this;
+      if (is_empty()) return *this;
+      if (_window_x != posx || _window_y != posy) {
+        NSPoint pos = NSMakePoint(posx, posy);
+        dispatch_sync(dispatch_get_main_queue(), ^{
+          [_window setFrameTopLeftPoint:pos];
+        });
+        _window_x = posx;
+        _window_y = posy;
+      }
+      show();
+      _is_moved = false;
+      return *this;
     }
 
     CImgDisplay& show_mouse() {
@@ -12134,7 +12142,7 @@ namespace cimg_library_suffixed {
       _title = new char[s];
       std::memcpy(_title, tmp, s * sizeof(char));
       NSString *title = [[NSString alloc] initWithUTF8String:tmp];
-      [_window performSelectorOnMainThread:@selector(setTitle:) withObject:title waitUntilDone:FALSE];
+      [_window performSelectorOnMainThread:@selector(setTitle:) withObject:title waitUntilDone:YES];
       delete[] tmp;
       return *this;
     }
@@ -12149,15 +12157,29 @@ namespace cimg_library_suffixed {
       return render(img).paint();
     }
 
+    static void _paint(void *arg)
+    {
+      CImgDisplay *disp = (CImgDisplay*)arg;
+      pthread_mutex_lock(&disp->_mutex);
+      NSGraphicsContext *ctxt = [NSGraphicsContext graphicsContextWithWindow:disp->_window];
+      if (!ctxt) {
+        pthread_mutex_unlock(&disp->_mutex);
+        return;
+      }
+      CGDataProviderRef data = CGDataProviderCreateWithData(NULL, disp->_data.data(), disp->_width*disp->_height*sizeof(unsigned int), NULL);
+      CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+      CGImageRef image = CGImageCreate(disp->_width, disp->_height, 8, 32, disp->_width*sizeof(unsigned int), cs, kCGBitmapByteOrderDefault | kCGImageAlphaLast, data, NULL, true, kCGRenderingIntentDefault);
+      CGContextDrawImage([ctxt CGContext], [disp->_window frame], image);
+      pthread_mutex_unlock(&disp->_mutex);
+    }
+
     CImgDisplay& paint() {
       if (_is_closed) return *this;
-      pthread_mutex_lock(&_mutex);
-      NSGraphicsContext *ctxt = [NSGraphicsContext graphicsContextWithWindow:_window];
-      CGDataProviderRef data = CGDataProviderCreateWithData(NULL, _data.data(), _width*_height*sizeof(unsigned int), NULL);
-      CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
-      CGImageRef image = CGImageCreate(_width, _height, 8, 32, _width*sizeof(unsigned int), cs, kCGBitmapByteOrderDefault | kCGImageAlphaLast, data, NULL, true, kCGRenderingIntentDefault);
-      CGContextDrawImage([ctxt CGContext], [_window frame], image);
-      pthread_mutex_unlock(&_mutex);
+      if ([NSThread isMainThread]) {
+        _paint(this);
+      } else {
+        dispatch_sync_f(dispatch_get_main_queue(), this, _paint);
+      }
       return *this;
     }
 	

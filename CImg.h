@@ -2367,7 +2367,8 @@ extern void _CFRunLoopSetCurrent(CFRunLoopRef rl);
 @interface CImgApp : NSObject
 - (BOOL) isMainThread;
 + (BOOL) isMainThread;
-- (void) initializeWindow:(cimg_library_suffixed::CImgDisplay *)disp;
++ (NSThread*) mainThread;
+- (void) initializeWindow:(NSValue *)value;
 - (void) run;
 @end
 
@@ -11895,6 +11896,7 @@ namespace cimg_library_suffixed {
       _window_height = _height;
       flush();
 
+      pthread_mutex_unlock(&_mutex);
       pthread_cond_broadcast(&_is_created);
     }
 
@@ -11953,7 +11955,7 @@ namespace cimg_library_suffixed {
         _create_window();
       } else {
         pthread_mutex_lock(&_mutex);
-        [cimg::macOS_attr().app performSelector:@selector(initializeWindow) onThread:cimg::macOS_attr().events_thread withObject:this waitUntilDone:FALSE];
+        [cimg::macOS_attr().app performSelector:@selector(initializeWindow:) onThread:cimg::macOS_attr().events_thread withObject:[NSValue valueWithPointer:this] waitUntilDone:FALSE];
         pthread_cond_wait(&_is_created, &_mutex);
       }
 
@@ -67200,8 +67202,14 @@ namespace cimg_library_suffixed {
 {
   return [NSThread currentThread] == cimg_library::cimg::macOS_attr().events_thread;
 }
-- (void) initializeWindow:(cimg_library_suffixed::CImgDisplay *)disp
++ (NSThread*) mainThread
 {
+  return cimg_library::cimg::macOS_attr().events_thread;
+}
+- (void) initializeWindow:(NSValue*)value
+{
+  cimg_library::CImgDisplay *disp = (cimg_library::CImgDisplay *)[value pointerValue];
+  pthread_mutex_lock(&disp->_mutex);
   disp->_create_window();
 }
 - (void) run
@@ -67222,6 +67230,14 @@ namespace cimg_library_suffixed {
   Method orig2 = class_getInstanceMethod([NSThread class], @selector(isMainThread));
   Method hook2 = class_getInstanceMethod([CImgApp class], @selector(isMainThread));
   if (orig2 && hook2) {
+    method_exchangeImplementations(orig2, hook2);
+  } else {
+    throw cimg_library::CImgDisplayException("[Obj-C] CImgApp::run: cannot hook instance isMainThread check.");
+  }
+
+  Method orig3 = class_getClassMethod([NSThread class], @selector(mainThread));
+  Method hook3 = class_getClassMethod([CImgApp class], @selector(mainThread));
+  if (orig3 && hook3) {
     method_exchangeImplementations(orig2, hook2);
   } else {
     throw cimg_library::CImgDisplayException("[Obj-C] CImgApp::run: cannot hook instance isMainThread check.");

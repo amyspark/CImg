@@ -11915,7 +11915,6 @@ namespace cimg_library_suffixed {
     static void _events_thread(void *arg)
     {
       cimg_library::CImgDisplay *disp = (cimg_library::CImgDisplay *)arg;
-      pthread_mutex_lock(&disp->_mutex);
       disp->_create_window();
     }
 
@@ -11953,6 +11952,7 @@ namespace cimg_library_suffixed {
         pthread_mutex_lock(&_mutex);
         dispatch_async_f(dispatch_get_main_queue(), this, _events_thread);
         pthread_cond_wait(&_is_created, &_mutex);
+        pthread_mutex_unlock(&_mutex);
       }
 
       return *this;
@@ -12122,20 +12122,21 @@ namespace cimg_library_suffixed {
     }
 
     CImgDisplay& set_title(const char* const format, ...) {
-        if (is_empty()) return *this;
-        char* const tmp = new char[1024];
-        va_list ap;
-        va_start(ap, format);
-        cimg_vsnprintf(tmp, 1024, format, ap);
-        va_end(ap);
-        if (!std::strcmp(_title, tmp)) { delete[] tmp; return *this; }
-        delete[] _title;
-        const unsigned int s = (unsigned int)std::strlen(tmp) + 1;
-        _title = new char[s];
-        std::memcpy(_title, tmp, s * sizeof(char));
-        _window.title = [[NSString alloc] initWithUTF8String:tmp];
-        delete[] tmp;
-        return *this;
+      if (is_empty()) return *this;
+      char* const tmp = new char[1024];
+      va_list ap;
+      va_start(ap, format);
+      cimg_vsnprintf(tmp, 1024, format, ap);
+      va_end(ap);
+      if (!std::strcmp(_title, tmp)) { delete[] tmp; return *this; }
+      delete[] _title;
+      const unsigned int s = (unsigned int)std::strlen(tmp) + 1;
+      _title = new char[s];
+      std::memcpy(_title, tmp, s * sizeof(char));
+      NSString *title = [[NSString alloc] initWithUTF8String:tmp];
+      [_window performSelectorOnMainThread:@selector(setTitle:) withObject:title waitUntilDone:FALSE];
+      delete[] tmp;
+      return *this;
     }
 
     template<typename T>
@@ -67205,7 +67206,6 @@ namespace cimg_library_suffixed {
 - (void) initializeWindow:(NSValue*)value
 {
   cimg_library::CImgDisplay *disp = (cimg_library::CImgDisplay *)[value pointerValue];
-  pthread_mutex_lock(&disp->_mutex);
   disp->_create_window();
 }
 - (void) run

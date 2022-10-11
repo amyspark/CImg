@@ -11830,7 +11830,7 @@ namespace cimg_library_suffixed {
     bool _is_mouse_tracked, _is_cursor_visible;
     pthread_mutex_t _mutex;
     pthread_cond_t _is_created;
-    CImgWindow *_window, *_background_window;
+    CImgWindow *_window;
     std::vector<unsigned int> _data;
 
     static int screen_width() {
@@ -11869,10 +11869,11 @@ namespace cimg_library_suffixed {
         if (wy<0) wy = 0;
         rect = NSMakeRect(wx, wy, ww, wh);
         _window = [[CImgWindow alloc] initWithContentRect:rect styleMask: mask backing: NSBackingStoreBuffered defer:YES];
+        // G'MIC releases windows on its own
+        [_window setReleasedWhenClosed:NO];
         NSString *t = [[NSString alloc] initWithUTF8String:_title];
         [_window setTitle:t];
         [_window setBackgroundColor:[NSColor blackColor]];
-        [_window setAlphaValue:0];
         [_window setDisplay: this];
         if (!_is_closed) {
           rect = [_window frame];
@@ -11885,8 +11886,9 @@ namespace cimg_library_suffixed {
           sy = (unsigned int)screen_height();
         NSRect rect = NSMakeRect(0, 0, sx, sy);
         _window = [[CImgWindow alloc] initWithContentRect:rect styleMask: NSWindowStyleMaskFullScreen backing: NSBackingStoreBuffered defer:YES];
+        // G'MIC releases windows on its own
+        [_window setReleasedWhenClosed:NO];
         [_window setBackgroundColor:[NSColor blackColor]];
-        [_window setAlphaValue:0];
         [_window setLevel:NSScreenSaverWindowLevel];
         [_window setDisplay: this];
         _window_x = _window_y = 0;
@@ -11896,7 +11898,7 @@ namespace cimg_library_suffixed {
       flush();
 
       [_window setRestorable:NO];
-      [_window makeKeyAndOrderFront:nil];
+      [_window makeKeyAndOrderFront:_window];
       if (!_is_fullscreen) {
         [_window setMovableByWindowBackground:YES];
       }
@@ -11905,15 +11907,16 @@ namespace cimg_library_suffixed {
       pthread_cond_broadcast(&_is_created);
     }
 
+    // TODO: this must be executed on main thread
     CImgDisplay& _update_window_pos() {
-        if (_is_closed) _window_x = _window_y = cimg::type<int>::min();
-        else {
-            NSRect contentRect = NSMakeRect(0, 0, _width, _height);
-            contentRect = [_window frameRectForContentRect: contentRect];
-            _window_x = contentRect.origin.x;
-            _window_y = contentRect.origin.y;
-        }
-        return *this;
+      if (_is_closed) _window_x = _window_y = cimg::type<int>::min();
+      else {
+        NSRect contentRect = NSMakeRect(0, 0, _width, _height);
+        contentRect = [_window frameRectForContentRect: contentRect];
+        _window_x = contentRect.origin.x;
+        _window_y = contentRect.origin.y;
+      }
+      return *this;
     }
 
     static void _events_thread(void *arg)
@@ -11964,7 +11967,7 @@ namespace cimg_library_suffixed {
 	
     CImgDisplay& assign() {
       if (is_empty()) return flush();
-      [_window close];
+      [_window performSelectorOnMainThread:@selector(close) withObject:nil waitUntilDone:YES];
       _window = 0;
       _data.clear();
       delete[] _title;
@@ -12160,16 +12163,17 @@ namespace cimg_library_suffixed {
     static void _paint(void *arg)
     {
       CImgDisplay *disp = (CImgDisplay*)arg;
-      pthread_mutex_lock(&disp->_mutex);
       NSGraphicsContext *ctxt = [NSGraphicsContext graphicsContextWithWindow:disp->_window];
-      if (!ctxt) {
-        pthread_mutex_unlock(&disp->_mutex);
-        return;
-      }
+      if (!ctxt) return;
+      pthread_mutex_lock(&disp->_mutex);
       CGDataProviderRef data = CGDataProviderCreateWithData(NULL, disp->_data.data(), disp->_width*disp->_height*sizeof(unsigned int), NULL);
       CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
       CGImageRef image = CGImageCreate(disp->_width, disp->_height, 8, 32, disp->_width*sizeof(unsigned int), cs, kCGBitmapByteOrderDefault | kCGImageAlphaLast, data, NULL, true, kCGRenderingIntentDefault);
       CGContextDrawImage([ctxt CGContext], [disp->_window frame], image);
+      CFURLRef url = (__bridge CFURLRef)[NSURL fileURLWithPath:@"test.png"];
+      CGImageDestinationRef destination = CGImageDestinationCreateWithURL(url, kUTTypePNG, 1, NULL);
+      CGImageDestinationAddImage(destination, image, nil);
+      CGImageDestinationFinalize(destination);
       pthread_mutex_unlock(&disp->_mutex);
     }
 

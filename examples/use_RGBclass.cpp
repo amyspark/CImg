@@ -83,6 +83,7 @@ int main() {
 
   [NSApplication sharedApplication];
   [NSApp activateIgnoringOtherApps:YES];
+  [NSApp setActivationPolicy: NSApplicationActivationPolicyRegular];
   pthread_t thread;
   pthread_create(&thread, NULL, &run, NULL);
   [NSApp run];

@@ -11891,13 +11891,14 @@ namespace cimg_library_suffixed {
         [_window setDisplay: this];
         _window_x = _window_y = 0;
       }
-      [_window makeKeyAndOrderFront:nil];
       _window_width = _width;
       _window_height = _height;
       flush();
 
       pthread_mutex_unlock(&_mutex);
       pthread_cond_broadcast(&_is_created);
+
+      [_window performSelectorOnMainThread:@selector(makeKeyAndOrderFront:) withObject:nil waitUntilDone:false];
     }
 
     CImgDisplay& _update_window_pos() {
@@ -11909,6 +11910,13 @@ namespace cimg_library_suffixed {
             _window_y = contentRect.origin.y;
         }
         return *this;
+    }
+
+    static void _events_thread(void *arg)
+    {
+      cimg_library::CImgDisplay *disp = (cimg_library::CImgDisplay *)arg;
+      pthread_mutex_lock(&disp->_mutex);
+      disp->_create_window();
     }
 
     CImgDisplay& _assign(const unsigned int dimw, const unsigned int dimh, const char *const ptitle=0,
@@ -11938,24 +11946,12 @@ namespace cimg_library_suffixed {
 
       pthread_mutex_init(&_mutex, NULL);
       pthread_cond_init(&_is_created, NULL);
-      // Create global event thread
-      if (![NSApp isRunning]) {
-        cimg_lock_display();
-        cimg::macOS_attr().app = [[CImgApp alloc] init];
-        cimg::macOS_attr().events_thread = [[NSThread alloc] initWithTarget:cimg::macOS_attr().app selector:@selector(run) object:nil];
-        [cimg::macOS_attr().events_thread start];
-        cimg_unlock_display();
-
-        // lock until the events thread is done patching
-        pthread_mutex_lock(&cimg::macOS_attr().wait_event_mutex);
-        pthread_cond_wait(&cimg::macOS_attr()._is_created,&cimg::macOS_attr().wait_event_mutex);
-      }
       // Create Cocoa window
       if ([NSThread isMainThread]) {
         _create_window();
       } else {
         pthread_mutex_lock(&_mutex);
-        [cimg::macOS_attr().app performSelector:@selector(initializeWindow:) onThread:cimg::macOS_attr().events_thread withObject:[NSValue valueWithPointer:this] waitUntilDone:FALSE];
+        dispatch_async_f(dispatch_get_main_queue(), this, _events_thread);
         pthread_cond_wait(&_is_created, &_mutex);
       }
 

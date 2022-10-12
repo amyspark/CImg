@@ -110,7 +110,8 @@ SET(CIMG_FFTW3_CCFLAGS  -Dcimg_use_fftw3)
 # ( https://github.com/strukturag/libheif )
 SET(CIMG_HEIC_CCFLAGS  -Dcimg_use_heic)
 
-
+# Flags to enable support for the Cocoa backend in macOS.
+SET(CIMG_COCOA_CCFLAGS "-x objective-c++ -std=c++14 -fobjc-arc")
 
 # ### Search Additional Libraries ##########
 FIND_PACKAGE(OpenCV)
@@ -137,19 +138,21 @@ find_package_handle_standard_args(HEIF
                                   REQUIRED_VARS HEIF_LIBRARY HEIF_INCLUDE_DIR
                                   VERSION_VAR HEIF_VERSION)
 
-PKG_CHECK_MODULES(FFTW3 fftw3)
+# PKG_CHECK_MODULES(FFTW3 fftw3)
 PKG_CHECK_MODULES(OPENEXR OpenEXR)
-PKG_CHECK_MODULES(MAGICK Magick++)
+# PKG_CHECK_MODULES(MAGICK Magick++)
 
 # PKG_CHECK_MODULES(LIBAVCODEC libavcodec)
 # PKG_CHECK_MODULES(LIBAVFORMAT libavformat)
 # PKG_CHECK_MODULES(LIBSWSCALE libswscale)
 # PKG_CHECK_MODULES(LIBAVUTIL libavutil)
 
-if(NOT WIN32)
+if(NOT WIN32 AND NOT APPLE)
   FIND_PACKAGE(X11)
-  FIND_PACKAGE(Threads REQUIRED)
+elseif(APPLE)
+  FIND_LIBRARY(APPKIT_LIBRARY AppKit REQUIRED)
 endif()
+FIND_PACKAGE(Threads REQUIRED)
 
 # #### End of additional libraries search ##########
 
@@ -266,6 +269,11 @@ endif()
 
 if( WIN32)
   SET( SYSTEM_LIBS  ${SYSTEM_LIBS}  gdi32 )
+endif()
+
+if (APPLE)
+  SET(CIMG_CFLAGS "${CIMG_CFLAGS} ${CIMG_COCOA_CCFLAGS}")
+  SET(SYSTEM_LIBS ${SYSTEM_LIBS} ${APPKIT_LIBRARY})
 endif()
 
 if (OpenCV_FOUND)

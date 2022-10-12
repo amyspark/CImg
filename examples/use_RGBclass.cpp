@@ -52,10 +52,17 @@ using namespace cimg_library;
 #define cimg_imagepath "img/"
 #endif
 
-// Main procedure
-//----------------
-int main() {
+static void terminate_cocoa_application(void)
+{
+  dispatch_async(dispatch_get_main_queue(), ^{
+    [NSApp hide:NSApp];
+    [NSApp terminate:NSApp];
+  });
+}
 
+static void *run(void *)
+{
+  pthread_setname_np("display osx");
   // Load images.
   CImg<short> img1(cimg_imagepath "milla.bmp");
   const CImg<float> img2 = CImg<float>(cimg_imagepath "parrot.ppm").resize(img1,3);
@@ -66,6 +73,21 @@ int main() {
     if (!((x*y)%31)) img1.RGB_at(x,y) = default_color;
     else if ((x+y)%2) img1.RGB_at(x,y) = img2.RGB_at(x,y);
   img1.display();
+
+  terminate_cocoa_application();
+}
+
+// Main procedure
+//----------------
+int main() {
+
+  [NSApplication sharedApplication];
+  [NSApp activateIgnoringOtherApps:YES];
+  [NSApp setActivationPolicy: NSApplicationActivationPolicyRegular];
+  pthread_t thread;
+  pthread_create(&thread, NULL, &run, NULL);
+  [NSApp run];
+  pthread_join(thread, NULL);
 
   // Quit.
   return 0;

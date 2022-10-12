@@ -2379,7 +2379,7 @@ extern "C" {
 - (void)windowDidMove:(NSNotification*)notification;
 - (void)windowDidUpdate:(NSNotification*)notification;
 @end
-} // extern "C"
+}
 #endif
 
 namespace cimg_library_suffixed {
@@ -11811,7 +11811,7 @@ namespace cimg_library_suffixed {
     CImgWindow *_window;
     std::vector<unsigned int> _data;
     NSRect _rect;
-    NSPos _pos;
+    NSPoint _pos;
 
     static int screen_width() {
       const NSRect frame = [[NSScreen mainScreen] frame];
@@ -12201,7 +12201,7 @@ namespace cimg_library_suffixed {
       NSGraphicsContext *ctxt = [NSGraphicsContext graphicsContextWithWindow:_window];
       // ctxt can be null if the application went out of focus.
       if (!ctxt) return;
-      pthread_mutex_lock(&disp->_mutex);
+      pthread_mutex_lock(&_mutex);
       CGDataProviderRef data = CGDataProviderCreateWithData(NULL, _data.data(), _width*_height*sizeof(unsigned int), NULL);
       CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
       CGImageRef image = CGImageCreate(_width, _height, 8, 32, _width*sizeof(unsigned int), cs, kCGBitmapByteOrderDefault | kCGImageAlphaLast, data, NULL, true, kCGRenderingIntentDefault);
@@ -67244,7 +67244,8 @@ namespace cimg_library_suffixed {
   } // namespace cimg { ...
 } // namespace cimg_library { ...
 
-#if cimg_display==3 && defined(cimg_main)
+#if cimg_display==3 && !defined(cimg_module)
+extern "C" {
 @implementation CImgWindow
 {
 @private
@@ -67373,6 +67374,7 @@ namespace cimg_library_suffixed {
   cimg_library_suffixed::cimg_unlock_display();
 }
 @end
+} // extern "C" {...
 #endif
 
 //! Short alias name.
